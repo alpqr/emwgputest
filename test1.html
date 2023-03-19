@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Test</title>
+    <style>
+        .emscripten { padding-right: 0; margin-left: auto; margin-right: auto; display: block; width: 100%; height: 100% }
+        canvas.emscripten { border: 0px none; background-color: black; }
+    </style>
+  </head>
+  <body>
+    <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()">
+    </canvas>
+    <script>
+        var Module = {
+            canvas: document.getElementById('canvas')
+        };
+    </script>
+    <script type="text/javascript" src="build/test1.js">
+    </script>
+  </body>
+</html>
