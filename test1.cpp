@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <math.h>
 
+#define HANDMADE_MATH_USE_DEGREES
+#include "3rdparty/HandmadeMath/HandmadeMath.h"
+
 struct Size
 {
     uint32_t width = 0;
@@ -21,11 +24,15 @@ inline bool operator!=(const Size &a, const Size &b)
     return !(a == b);
 }
 
+struct SceneData;
+
 struct Scene
 {
     void init();
     void cleanup();
     void render();
+
+    SceneData *sd = nullptr;
 };
 
 struct
@@ -160,6 +167,39 @@ static void end_render_pass(WGPURenderPassEncoder pass)
     wgpuRenderPassEncoderRelease(pass);
 }
 
+WGPUShaderModule create_shader_module(const char *wgsl_source)
+{
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {};
+    wgsl_desc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
+    wgsl_desc.source = wgsl_source;
+    WGPUShaderModuleDescriptor desc = {};
+    desc.nextInChain = &wgsl_desc.chain;
+    return wgpuDeviceCreateShaderModule(d.device, &desc);
+}
+
+static WGPUBuffer create_buffer(WGPUBufferUsageFlags usage, uint64_t size, bool mapped = false)
+{
+    WGPUBufferDescriptor desc = {};
+    desc.usage = usage;
+    desc.size = size;
+    desc.mappedAtCreation = mapped;
+    return wgpuDeviceCreateBuffer(d.device, &desc);
+}
+
+static WGPUBuffer create_buffer_with_data(WGPUBufferUsageFlags usage, uint64_t size, const void *data, uint32_t data_size = 0)
+{
+    WGPUBuffer buffer = create_buffer(usage, size, true);
+    char *p = static_cast<char *>(wgpuBufferGetMappedRange(buffer, 0, size));
+    memcpy(p, data, data_size ? data_size : size);
+    wgpuBufferUnmap(buffer);
+    return buffer;
+}
+
+static WGPUBuffer create_uniform_buffer(uint64_t size)
+{
+    return create_buffer(WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, size);
+}
+
 static void init()
 {
     wgpuDeviceSetUncapturedErrorCallback(d.device, [](WGPUErrorType errorType, const char* message, void*) {
@@ -263,20 +303,162 @@ int main()
     return 0;
 }
 
+// ----------
+
+static const char *shaders1 = R"end(
+struct Uniforms {
+    mvp : mat4x4<f32>,
+}
+@binding(0) @group(0) var<uniform> u : Uniforms;
+
+struct VertexOutput {
+    @builtin(position) Position : vec4<f32>
+}
+
+@vertex fn v_main(@location(0) position : vec4<f32>) -> VertexOutput {
+    var output : VertexOutput;
+    output.Position = u.mvp * position;
+    return output;
+}
+
+@fragment fn f_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
+}
+)end";
+
+static float vertexData[] = {
+     0.0f,   0.5f,  0.0f,
+    -0.5f,  -0.5f,  0.0f,
+     0.5f,  -0.5f,  0.0f
+};
+
+struct SceneData
+{
+    SceneData() {
+        shaderModule1 = create_shader_module(shaders1);
+        vbuf_size = sizeof(vertexData);
+        vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex, vbuf_size, vertexData);
+        ubuf = create_uniform_buffer(64);
+
+        WGPUBindGroupLayoutEntry bgl_entries[] = {
+            {
+                .nextInChain = nullptr,
+                .binding = 0,
+                .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
+                .buffer = {
+                    .nextInChain = nullptr,
+                    .type = WGPUBufferBindingType_Uniform,
+                    .hasDynamicOffset = false,
+                    .minBindingSize = 64
+                }
+            }
+        };
+        WGPUBindGroupLayoutDescriptor bgl_desc = {};
+        bgl_desc.entryCount = 1;
+        bgl_desc.entries = bgl_entries;
+        bgl = wgpuDeviceCreateBindGroupLayout(d.device, &bgl_desc);
+
+        WGPUBindGroupEntry bg_entry = {};
+        bg_entry.buffer = ubuf;
+        bg_entry.size = 64;
+        WGPUBindGroupDescriptor bg_desc = {};
+        bg_desc.layout = bgl;
+        bg_desc.entryCount = 1;
+        bg_desc.entries = &bg_entry;
+        bg = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
+
+        WGPUPipelineLayoutDescriptor pl_desc = {};
+        pl_desc.bindGroupLayoutCount = 1;
+        pl_desc.bindGroupLayouts = &bgl;
+        pl = wgpuDeviceCreatePipelineLayout(d.device, &pl_desc);
+
+        WGPUDepthStencilState ds_state = {};
+        ds_state.format = WGPUTextureFormat_Depth24PlusStencil8;
+        ds_state.depthWriteEnabled = true;
+        ds_state.depthCompare = WGPUCompareFunction_Less;
+
+        WGPUColorTargetState color0 = {};
+        color0.format = WGPUTextureFormat_BGRA8Unorm;
+        color0.writeMask = WGPUColorWriteMask_All;
+
+        WGPUFragmentState fs = {};
+        fs.module = shaderModule1;
+        fs.entryPoint = "f_main";
+        fs.targetCount = 1;
+        fs.targets = &color0;
+
+        WGPUVertexAttribute vertex_attr = {};
+        vertex_attr.format = WGPUVertexFormat_Float32x3;
+        vertex_attr.offset = 0;
+        vertex_attr.shaderLocation = 0;
+        WGPUVertexBufferLayout vbuf_layout = {};
+        vbuf_layout.arrayStride = 3 * sizeof(float);
+        vbuf_layout.attributeCount = 1;
+        vbuf_layout.attributes = &vertex_attr;
+
+        WGPURenderPipelineDescriptor ps_desc = {};
+        ps_desc.layout = pl;
+        ps_desc.vertex.module = shaderModule1;
+        ps_desc.vertex.entryPoint = "v_main";
+        ps_desc.vertex.bufferCount = 1;
+        ps_desc.vertex.buffers = &vbuf_layout;
+        ps_desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+        ps_desc.depthStencil = &ds_state;
+        ps_desc.multisample.count = 1;
+        ps_desc.fragment = &fs;
+        ps = wgpuDeviceCreateRenderPipeline(d.device, &ps_desc);
+    }
+
+    ~SceneData() {
+        wgpuRenderPipelineRelease(ps);
+        wgpuPipelineLayoutRelease(pl);
+        wgpuBindGroupRelease(bg);
+        wgpuBindGroupLayoutRelease(bgl);
+        wgpuBufferDestroy(ubuf);
+        wgpuBufferDestroy(vbuf);
+        wgpuShaderModuleRelease(shaderModule1);
+    }
+
+    WGPUShaderModule shaderModule1;
+    WGPUBuffer vbuf;
+    uint32_t vbuf_size;
+    WGPUBuffer ubuf;
+    WGPUBindGroupLayout bgl;
+    WGPUBindGroup bg;
+    WGPUPipelineLayout pl;
+    WGPURenderPipeline ps;
+
+    Size last_fb_size;
+    HMM_Mat4 projection;
+};
+
 void Scene::init()
 {
-
+    sd = new SceneData;
 }
 
 void Scene::cleanup()
 {
+    delete sd;
+    sd = nullptr;
 }
 
 void Scene::render()
 {
+    if (sd->last_fb_size != d.fb_size) {
+        sd->last_fb_size = d.fb_size;
+        sd->projection = HMM_M4D(1.0f);
+        //sd->projection = HMM_Perspective_RH_ZO(45.0f, float(d.fb_size.width) / d.fb_size.height, 0.01f, 1000.0f);
+        wgpuQueueWriteBuffer(d.queue, sd->ubuf, 0, &sd->projection.Elements[0][0], 64);
+    }
+
     WGPUColor clear_color = { 0.0f, 1.0f, 0.0f, 1.0f };
     WGPURenderPassEncoder pass = begin_render_pass(clear_color);
 
-    end_render_pass(pass);
+    wgpuRenderPassEncoderSetPipeline(pass, sd->ps);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, sd->bg, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, sd->vbuf, 0, sd->vbuf_size);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
 
+    end_render_pass(pass);
 }
