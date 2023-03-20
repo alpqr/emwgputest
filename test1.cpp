@@ -35,6 +35,8 @@ struct
     Size attachments_size;
     WGPUTexture ds = nullptr;
     WGPUTextureView ds_view = nullptr;
+
+    WGPUColor clear_color = { 0.0f, 1.0f, 0.0f, 1.0f };
 } d;
 
 static void update_size()
@@ -110,11 +112,21 @@ static void render()
     attachment.view = d.backbuffer;
     attachment.loadOp = WGPULoadOp_Clear;
     attachment.storeOp = WGPUStoreOp_Store;
-    attachment.clearValue = { 0, 1, 0, 1};
+    attachment.clearValue = d.clear_color;
+
+    WGPURenderPassDepthStencilAttachment depthStencilAttachment = {};
+    depthStencilAttachment.view = d.ds_view;
+    depthStencilAttachment.depthClearValue = 1.0f;
+    depthStencilAttachment.depthLoadOp = WGPULoadOp_Clear;
+    depthStencilAttachment.depthStoreOp = WGPUStoreOp_Discard;
+    depthStencilAttachment.stencilLoadOp = WGPULoadOp_Clear;
+    depthStencilAttachment.stencilStoreOp = WGPUStoreOp_Discard;
+    depthStencilAttachment.stencilClearValue = 0;
 
     WGPURenderPassDescriptor renderpass = {};
     renderpass.colorAttachmentCount = 1;
     renderpass.colorAttachments = &attachment;
+    renderpass.depthStencilAttachment = &depthStencilAttachment;
 
     WGPUCommandBuffer cb;
     {
