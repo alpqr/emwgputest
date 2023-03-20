@@ -21,6 +21,13 @@ inline bool operator!=(const Size &a, const Size &b)
     return !(a == b);
 }
 
+struct Scene
+{
+    void init();
+    void cleanup();
+    void render();
+};
+
 struct
 {
     Size win_size;
@@ -29,6 +36,7 @@ struct
 
     WGPUDevice device = nullptr;
     WGPUQueue queue = nullptr;
+    WGPUSurface surface = nullptr;
     WGPUSwapChain swapchain = nullptr;
     WGPUTextureView backbuffer = nullptr;
 
@@ -36,7 +44,11 @@ struct
     WGPUTexture ds = nullptr;
     WGPUTextureView ds_view = nullptr;
 
-    WGPUColor clear_color = { 0.0f, 1.0f, 0.0f, 1.0f };
+    WGPUCommandEncoder cmd_encoder = nullptr;
+
+    bool quit = false;
+
+    Scene scene;
 } d;
 
 static void update_size()
@@ -94,11 +106,8 @@ static void ensure_attachments()
     printf("Created depth-stencil %dx%d (%p, %p)\n", d.attachments_size.width, d.attachments_size.height, d.ds, d.ds_view);
 }
 
-static void render()
+static void begin_frame()
 {
-    if (!d.swapchain)
-        return;
-
     if (d.backbuffer) {
         wgpuTextureViewRelease(d.backbuffer);
         d.backbuffer = nullptr;
@@ -108,61 +117,47 @@ static void render()
 
     ensure_attachments();
 
+    d.cmd_encoder = wgpuDeviceCreateCommandEncoder(d.device, nullptr);
+}
+
+static void end_frame()
+{
+    WGPUCommandBuffer cb = wgpuCommandEncoderFinish(d.cmd_encoder, nullptr);
+    wgpuQueueSubmit(d.queue, 1, &cb);
+    wgpuCommandBufferRelease(cb);
+    wgpuCommandEncoderRelease(d.cmd_encoder);
+    d.cmd_encoder = nullptr;
+}
+
+static WGPURenderPassEncoder begin_render_pass(WGPUColor clear_color, float depth_clear_value = 1.0f, uint32_t stencil_clear_value = 0)
+{
     WGPURenderPassColorAttachment attachment = {};
     attachment.view = d.backbuffer;
     attachment.loadOp = WGPULoadOp_Clear;
     attachment.storeOp = WGPUStoreOp_Store;
-    attachment.clearValue = d.clear_color;
+    attachment.clearValue = clear_color;
 
     WGPURenderPassDepthStencilAttachment depthStencilAttachment = {};
     depthStencilAttachment.view = d.ds_view;
-    depthStencilAttachment.depthClearValue = 1.0f;
+    depthStencilAttachment.depthClearValue = depth_clear_value;
     depthStencilAttachment.depthLoadOp = WGPULoadOp_Clear;
     depthStencilAttachment.depthStoreOp = WGPUStoreOp_Discard;
     depthStencilAttachment.stencilLoadOp = WGPULoadOp_Clear;
     depthStencilAttachment.stencilStoreOp = WGPUStoreOp_Discard;
-    depthStencilAttachment.stencilClearValue = 0;
+    depthStencilAttachment.stencilClearValue = stencil_clear_value;
 
     WGPURenderPassDescriptor renderpass = {};
     renderpass.colorAttachmentCount = 1;
     renderpass.colorAttachments = &attachment;
     renderpass.depthStencilAttachment = &depthStencilAttachment;
 
-    WGPUCommandBuffer cb;
-    {
-        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(d.device, nullptr);
-        {
-            WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &renderpass);
-            wgpuRenderPassEncoderEnd(pass);
-        }
-        cb = wgpuCommandEncoderFinish(encoder, nullptr);
-    }
-    wgpuQueueSubmit(d.queue, 1, &cb);
+    return wgpuCommandEncoderBeginRenderPass(d.cmd_encoder, &renderpass);
 }
 
-static void frame()
+static void end_render_pass(WGPURenderPassEncoder pass)
 {
-    render();
-}
-
-using InitWGpuCallback = void (*)(WGPUDevice);
-
-static void init_wgpu(InitWGpuCallback callback)
-{
-    static const WGPUInstance instance = nullptr;
-    wgpuInstanceRequestAdapter(instance, nullptr, [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* userdata) {
-        if (message)
-            printf("wgpuInstanceRequestAdapter: %s\n", message);
-        if (status == WGPURequestAdapterStatus_Unavailable) {
-            puts("WebGPU unavailable");
-            exit(0);
-        }
-        wgpuAdapterRequestDevice(adapter, nullptr, [](WGPURequestDeviceStatus status, WGPUDevice dev, const char* message, void* userdata) {
-            if (message)
-                printf("wgpuAdapterRequestDevice: %s\n", message);
-            reinterpret_cast<InitWGpuCallback>(userdata)(dev);
-        }, userdata);
-    }, reinterpret_cast<void *>(callback));
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
 }
 
 static void init()
@@ -179,7 +174,7 @@ static void init()
 
     WGPUSurfaceDescriptor surfDesc = {};
     surfDesc.nextInChain = &canvasDesc.chain;
-    WGPUSurface surface = wgpuInstanceCreateSurface(nullptr, &surfDesc);
+    d.surface = wgpuInstanceCreateSurface(nullptr, &surfDesc);
 
     WGPUSwapChainDescriptor scDesc = {};
     scDesc.usage = WGPUTextureUsage_RenderAttachment;
@@ -187,9 +182,71 @@ static void init()
     scDesc.width = d.fb_size.width;
     scDesc.height = d.fb_size.height;
     scDesc.presentMode = WGPUPresentMode_Fifo;
-    d.swapchain = wgpuDeviceCreateSwapChain(d.device, surface, &scDesc);
+    d.swapchain = wgpuDeviceCreateSwapChain(d.device, d.surface, &scDesc);
 
     printf("Created swapchain %dx%d (%p)\n", d.fb_size.width, d.fb_size.height, d.swapchain);
+
+    d.scene.init();
+}
+
+static void cleanup()
+{
+    d.scene.cleanup();
+
+    if (d.ds_view) {
+        wgpuTextureViewRelease(d.ds_view);
+        d.ds_view = nullptr;
+    }
+    if (d.ds) {
+        wgpuTextureDestroy(d.ds);
+        d.ds = nullptr;
+    }
+    if (d.backbuffer) {
+        wgpuTextureViewRelease(d.backbuffer);
+        d.backbuffer = nullptr;
+    }
+    if (d.swapchain) {
+        wgpuSwapChainRelease(d.swapchain);
+        d.swapchain = nullptr;
+    }
+    if (d.surface) {
+        wgpuSurfaceRelease(d.surface);
+        d.surface = nullptr;
+    }
+}
+
+static void frame()
+{
+    if (d.swapchain) {
+        begin_frame();
+        d.scene.render();
+        end_frame();
+    }
+
+    if (d.quit) {
+        cleanup();
+        emscripten_cancel_main_loop();
+        exit(0);
+    }
+}
+
+using InitWGpuCallback = void (*)(WGPUDevice);
+
+static void init_wgpu(InitWGpuCallback callback)
+{
+    wgpuInstanceRequestAdapter(nullptr, nullptr, [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* userdata) {
+        if (message)
+            printf("wgpuInstanceRequestAdapter: %s\n", message);
+        if (status == WGPURequestAdapterStatus_Unavailable) {
+            puts("WebGPU unavailable");
+            exit(0);
+        }
+        wgpuAdapterRequestDevice(adapter, nullptr, [](WGPURequestDeviceStatus status, WGPUDevice dev, const char* message, void* userdata) {
+            if (message)
+                printf("wgpuAdapterRequestDevice: %s\n", message);
+            reinterpret_cast<InitWGpuCallback>(userdata)(dev);
+        }, userdata);
+    }, reinterpret_cast<void *>(callback));
 }
 
 int main()
@@ -204,4 +261,22 @@ int main()
     });
 
     return 0;
+}
+
+void Scene::init()
+{
+
+}
+
+void Scene::cleanup()
+{
+}
+
+void Scene::render()
+{
+    WGPUColor clear_color = { 0.0f, 1.0f, 0.0f, 1.0f };
+    WGPURenderPassEncoder pass = begin_render_pass(clear_color);
+
+    end_render_pass(pass);
+
 }
