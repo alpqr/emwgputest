@@ -145,7 +145,6 @@ extern "C" {
 EMSCRIPTEN_KEEPALIVE void _web_texture_loaded(int textureId, const char *uri)
 {
     WGPUTexture texture = reinterpret_cast<WGPUTexture>(textureId);
-    std::string s(uri);
     for (auto it = d.pending_web_texture_loads.begin(); it != d.pending_web_texture_loads.end(); ++it) {
         if (it->first == uri) {
             it->second(texture);
@@ -158,7 +157,6 @@ EMSCRIPTEN_KEEPALIVE void _web_texture_loaded(int textureId, const char *uri)
 
 EM_JS(void, _begin_load_web_texture, (int deviceId, const char *uri), {
     var device = WebGPU.mgrDevice.get(deviceId);
-    let blob;
     const srcUri = UTF8ToString(uri);
     fetch(srcUri).then((response) => {
         response.blob().then((blob) => {
