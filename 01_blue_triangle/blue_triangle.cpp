@@ -7,7 +7,7 @@
 #include <memory>
 
 #define HANDMADE_MATH_USE_DEGREES
-#include "3rdparty/HandmadeMath/HandmadeMath.h"
+#include "../3rdparty/HandmadeMath/HandmadeMath.h"
 
 struct Size
 {
