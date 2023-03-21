@@ -156,9 +156,8 @@ EMSCRIPTEN_KEEPALIVE void _web_texture_loaded(int textureId, const char *uri)
 }
 
 EM_JS(void, _begin_load_web_texture, (int deviceId, const char *uri), {
-    var device = WebGPU.mgrDevice.get(deviceId);
-    const srcUri = UTF8ToString(uri);
-    fetch(srcUri).then((response) => {
+    const device = WebGPU.mgrDevice.get(deviceId);
+    fetch(UTF8ToString(uri)).then((response) => {
         response.blob().then((blob) => {
             createImageBitmap(blob).then((imgBitmap) => {
                 const textureDescriptor = {
@@ -466,9 +465,9 @@ struct SceneData
 
     void start_load_assets();
     bool are_assets_ready() const;
-    void init();
+    void init_with_assets();
 
-    bool initialized = false;
+    bool ready = false;
     Size last_fb_size;
     WGPUShaderModule shader_module1 = nullptr;
     static const uint32_t UBUF_SIZE1 = 64;
@@ -502,7 +501,7 @@ bool SceneData::are_assets_ready() const
     return texture != nullptr;
 }
 
-void SceneData::init()
+void SceneData::init_with_assets()
 {
     shader_module1 = create_shader_module(shaders1);
     vbuf_size = sizeof(vertexData);
@@ -671,12 +670,16 @@ void Scene::cleanup()
 
 void Scene::render()
 {
-    if (!sd->are_assets_ready())
+    if (!sd->are_assets_ready()) {
+        WGPUColor loading_clear_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+        WGPURenderPassEncoder pass = begin_render_pass(loading_clear_color);
+        end_render_pass(pass);
         return;
+    }
 
-    if (!sd->initialized) {
-        sd->initialized = true;
-        sd->init();
+    if (!sd->ready) {
+        sd->init_with_assets();
+        sd->ready = true;
     }
 
     if (sd->last_fb_size != d.fb_size) {
