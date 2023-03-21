@@ -20,3 +20,8 @@ To debug as shown in https://developer.chrome.com/blog/wasm-debugging-2020/ add 
 
 * Now with vertex colors and rotating.
 * Uniform buffer update handled via staging buffer ring.
+
+03_simple_texture
+
+* Draws a textured quad.
+* The texture is loaded with EM_JS (fetch/ImageBitmap/copyExternalImageToTexture). Pros: easy to load up some PNG or such. Cons: async, got to fight callbacks etc.
