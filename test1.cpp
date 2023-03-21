@@ -4,6 +4,7 @@
 #include <webgpu/webgpu.h>
 #include <stdio.h>
 #include <math.h>
+#include <memory>
 
 #define HANDMADE_MATH_USE_DEGREES
 #include "3rdparty/HandmadeMath/HandmadeMath.h"
@@ -32,7 +33,7 @@ struct Scene
     void cleanup();
     void render();
 
-    SceneData *sd = nullptr;
+    std::unique_ptr<SceneData> sd;
 };
 
 struct
@@ -98,15 +99,18 @@ static void ensure_attachments()
 
     d.attachments_size = d.fb_size;
 
-    WGPUTextureDescriptor desc = {};
-    desc.usage = WGPUTextureUsage_RenderAttachment;
-    desc.dimension = WGPUTextureDimension_2D;
-    desc.size.width = d.attachments_size.width;
-    desc.size.height = d.attachments_size.height;
-    desc.size.depthOrArrayLayers = 1;
-    desc.format = WGPUTextureFormat_Depth24PlusStencil8;
-    desc.mipLevelCount = 1;
-    desc.sampleCount = 1;
+    WGPUTextureDescriptor desc = {
+        .usage = WGPUTextureUsage_RenderAttachment,
+        .dimension = WGPUTextureDimension_2D,
+        .size = {
+            .width = d.attachments_size.width,
+            .height = d.attachments_size.height,
+            .depthOrArrayLayers = 1
+        },
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .mipLevelCount = 1,
+        .sampleCount = 1
+    };
     d.ds = wgpuDeviceCreateTexture(d.device, &desc);
     d.ds_view = wgpuTextureCreateView(d.ds, nullptr);
 
@@ -138,25 +142,28 @@ static void end_frame()
 
 static WGPURenderPassEncoder begin_render_pass(WGPUColor clear_color, float depth_clear_value = 1.0f, uint32_t stencil_clear_value = 0)
 {
-    WGPURenderPassColorAttachment attachment = {};
-    attachment.view = d.backbuffer;
-    attachment.loadOp = WGPULoadOp_Clear;
-    attachment.storeOp = WGPUStoreOp_Store;
-    attachment.clearValue = clear_color;
+    WGPURenderPassColorAttachment attachment = {
+        .view = d.backbuffer,
+        .loadOp = WGPULoadOp_Clear,
+        .storeOp = WGPUStoreOp_Store,
+        .clearValue = clear_color
+    };
 
-    WGPURenderPassDepthStencilAttachment depthStencilAttachment = {};
-    depthStencilAttachment.view = d.ds_view;
-    depthStencilAttachment.depthClearValue = depth_clear_value;
-    depthStencilAttachment.depthLoadOp = WGPULoadOp_Clear;
-    depthStencilAttachment.depthStoreOp = WGPUStoreOp_Discard;
-    depthStencilAttachment.stencilLoadOp = WGPULoadOp_Clear;
-    depthStencilAttachment.stencilStoreOp = WGPUStoreOp_Discard;
-    depthStencilAttachment.stencilClearValue = stencil_clear_value;
+    WGPURenderPassDepthStencilAttachment depthStencilAttachment = {
+        .view = d.ds_view,
+        .depthLoadOp = WGPULoadOp_Clear,
+        .depthStoreOp = WGPUStoreOp_Discard,
+        .depthClearValue = depth_clear_value,
+        .stencilLoadOp = WGPULoadOp_Clear,
+        .stencilStoreOp = WGPUStoreOp_Discard,
+        .stencilClearValue = stencil_clear_value
+    };
 
-    WGPURenderPassDescriptor renderpass = {};
-    renderpass.colorAttachmentCount = 1;
-    renderpass.colorAttachments = &attachment;
-    renderpass.depthStencilAttachment = &depthStencilAttachment;
+    WGPURenderPassDescriptor renderpass = {
+        .colorAttachmentCount = 1,
+        .colorAttachments = &attachment,
+        .depthStencilAttachment = &depthStencilAttachment
+    };
 
     return wgpuCommandEncoderBeginRenderPass(d.cmd_encoder, &renderpass);
 }
@@ -169,20 +176,25 @@ static void end_render_pass(WGPURenderPassEncoder pass)
 
 WGPUShaderModule create_shader_module(const char *wgsl_source)
 {
-    WGPUShaderModuleWGSLDescriptor wgsl_desc = {};
-    wgsl_desc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-    wgsl_desc.source = wgsl_source;
-    WGPUShaderModuleDescriptor desc = {};
-    desc.nextInChain = &wgsl_desc.chain;
+    WGPUShaderModuleWGSLDescriptor wgsl_desc = {
+        .chain = {
+            .sType = WGPUSType_ShaderModuleWGSLDescriptor
+        },
+        .source = wgsl_source
+    };
+    WGPUShaderModuleDescriptor desc = {
+        .nextInChain = &wgsl_desc.chain
+    };
     return wgpuDeviceCreateShaderModule(d.device, &desc);
 }
 
 static WGPUBuffer create_buffer(WGPUBufferUsageFlags usage, uint64_t size, bool mapped = false)
 {
-    WGPUBufferDescriptor desc = {};
-    desc.usage = usage;
-    desc.size = size;
-    desc.mappedAtCreation = mapped;
+    WGPUBufferDescriptor desc = {
+        .usage = usage,
+        .size = size,
+        .mappedAtCreation = mapped
+    };
     return wgpuDeviceCreateBuffer(d.device, &desc);
 }
 
@@ -208,20 +220,25 @@ static void init()
 
     d.queue = wgpuDeviceGetQueue(d.device);
 
-    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {};
-    canvasDesc.chain.sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector;
-    canvasDesc.selector = "#canvas";
+    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
+        .chain = {
+            .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector
+        },
+        .selector = "#canvas"
+    };
 
-    WGPUSurfaceDescriptor surfDesc = {};
-    surfDesc.nextInChain = &canvasDesc.chain;
+    WGPUSurfaceDescriptor surfDesc = {
+        .nextInChain = &canvasDesc.chain
+    };
     d.surface = wgpuInstanceCreateSurface(nullptr, &surfDesc);
 
-    WGPUSwapChainDescriptor scDesc = {};
-    scDesc.usage = WGPUTextureUsage_RenderAttachment;
-    scDesc.format = WGPUTextureFormat_BGRA8Unorm;
-    scDesc.width = d.fb_size.width;
-    scDesc.height = d.fb_size.height;
-    scDesc.presentMode = WGPUPresentMode_Fifo;
+    WGPUSwapChainDescriptor scDesc = {
+        .usage = WGPUTextureUsage_RenderAttachment,
+        .format = WGPUTextureFormat_BGRA8Unorm,
+        .width = d.fb_size.width,
+        .height = d.fb_size.height,
+        .presentMode = WGPUPresentMode_Fifo
+    };
     d.swapchain = wgpuDeviceCreateSwapChain(d.device, d.surface, &scDesc);
 
     printf("Created swapchain %dx%d (%p)\n", d.fb_size.width, d.fb_size.height, d.swapchain);
@@ -334,122 +351,140 @@ static float vertexData[] = {
 
 struct SceneData
 {
-    SceneData() {
-        shaderModule1 = create_shader_module(shaders1);
-        vbuf_size = sizeof(vertexData);
-        vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex, vbuf_size, vertexData);
-        ubuf = create_uniform_buffer(64);
+    SceneData();
+    ~SceneData();
 
-        WGPUBindGroupLayoutEntry bgl_entries[] = {
-            {
-                .nextInChain = nullptr,
-                .binding = 0,
-                .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
-                .buffer = {
-                    .nextInChain = nullptr,
-                    .type = WGPUBufferBindingType_Uniform,
-                    .hasDynamicOffset = false,
-                    .minBindingSize = 64
-                }
-            }
-        };
-        WGPUBindGroupLayoutDescriptor bgl_desc = {};
-        bgl_desc.entryCount = 1;
-        bgl_desc.entries = bgl_entries;
-        bgl = wgpuDeviceCreateBindGroupLayout(d.device, &bgl_desc);
-
-        WGPUBindGroupEntry bg_entry = {};
-        bg_entry.buffer = ubuf;
-        bg_entry.size = 64;
-        WGPUBindGroupDescriptor bg_desc = {};
-        bg_desc.layout = bgl;
-        bg_desc.entryCount = 1;
-        bg_desc.entries = &bg_entry;
-        bg = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
-
-        WGPUPipelineLayoutDescriptor pl_desc = {};
-        pl_desc.bindGroupLayoutCount = 1;
-        pl_desc.bindGroupLayouts = &bgl;
-        pl = wgpuDeviceCreatePipelineLayout(d.device, &pl_desc);
-
-        WGPUDepthStencilState ds_state = {};
-        ds_state.format = WGPUTextureFormat_Depth24PlusStencil8;
-        ds_state.depthWriteEnabled = true;
-        ds_state.depthCompare = WGPUCompareFunction_Less;
-
-        WGPUColorTargetState color0 = {};
-        color0.format = WGPUTextureFormat_BGRA8Unorm;
-        color0.writeMask = WGPUColorWriteMask_All;
-
-        WGPUFragmentState fs = {};
-        fs.module = shaderModule1;
-        fs.entryPoint = "f_main";
-        fs.targetCount = 1;
-        fs.targets = &color0;
-
-        WGPUVertexAttribute vertex_attr = {};
-        vertex_attr.format = WGPUVertexFormat_Float32x3;
-        vertex_attr.offset = 0;
-        vertex_attr.shaderLocation = 0;
-        WGPUVertexBufferLayout vbuf_layout = {};
-        vbuf_layout.arrayStride = 3 * sizeof(float);
-        vbuf_layout.attributeCount = 1;
-        vbuf_layout.attributes = &vertex_attr;
-
-        WGPURenderPipelineDescriptor ps_desc = {};
-        ps_desc.layout = pl;
-        ps_desc.vertex.module = shaderModule1;
-        ps_desc.vertex.entryPoint = "v_main";
-        ps_desc.vertex.bufferCount = 1;
-        ps_desc.vertex.buffers = &vbuf_layout;
-        ps_desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-        ps_desc.depthStencil = &ds_state;
-        ps_desc.multisample.count = 1;
-        ps_desc.fragment = &fs;
-        ps = wgpuDeviceCreateRenderPipeline(d.device, &ps_desc);
-    }
-
-    ~SceneData() {
-        wgpuRenderPipelineRelease(ps);
-        wgpuPipelineLayoutRelease(pl);
-        wgpuBindGroupRelease(bg);
-        wgpuBindGroupLayoutRelease(bgl);
-        wgpuBufferDestroy(ubuf);
-        wgpuBufferDestroy(vbuf);
-        wgpuShaderModuleRelease(shaderModule1);
-    }
-
-    WGPUShaderModule shaderModule1;
+    Size last_fb_size;
+    WGPUShaderModule shader_module1;
     WGPUBuffer vbuf;
     uint32_t vbuf_size;
     WGPUBuffer ubuf;
     WGPUBindGroupLayout bgl;
-    WGPUBindGroup bg;
     WGPUPipelineLayout pl;
     WGPURenderPipeline ps;
-
-    Size last_fb_size;
-    HMM_Mat4 projection;
+    WGPUBindGroup bg;
 };
+
+SceneData::SceneData()
+{
+    shader_module1 = create_shader_module(shaders1);
+    vbuf_size = sizeof(vertexData);
+    vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex, vbuf_size, vertexData);
+    ubuf = create_uniform_buffer(64);
+
+    WGPUBindGroupLayoutEntry bgl_entries[] = {
+        {
+            .binding = 0,
+            .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
+            .buffer = {
+                .type = WGPUBufferBindingType_Uniform,
+                .minBindingSize = 64
+            }
+        }
+    };
+    WGPUBindGroupLayoutDescriptor bgl_desc = {
+        .entryCount = 1,
+        .entries = bgl_entries
+    };
+    bgl = wgpuDeviceCreateBindGroupLayout(d.device, &bgl_desc);
+
+    WGPUPipelineLayoutDescriptor pl_desc = {
+        .bindGroupLayoutCount = 1,
+        .bindGroupLayouts = &bgl
+    };
+    pl = wgpuDeviceCreatePipelineLayout(d.device, &pl_desc);
+
+    WGPUDepthStencilState ds_state = {
+        .format = WGPUTextureFormat_Depth24PlusStencil8,
+        .depthWriteEnabled = true,
+        .depthCompare = WGPUCompareFunction_Less
+    };
+
+    WGPUColorTargetState color0 = {
+        .format = WGPUTextureFormat_BGRA8Unorm,
+        .writeMask = WGPUColorWriteMask_All
+    };
+
+    WGPUFragmentState fs = {
+        .module = shader_module1,
+        .entryPoint = "f_main",
+        .targetCount = 1,
+        .targets = &color0
+    };
+
+    WGPUVertexAttribute vertex_attr = {
+        .format = WGPUVertexFormat_Float32x3,
+        .offset = 0,
+        .shaderLocation = 0
+    };
+    WGPUVertexBufferLayout vbuf_layout = {
+        .arrayStride = 3 * sizeof(float),
+        .attributeCount = 1,
+        .attributes = &vertex_attr
+    };
+
+    WGPURenderPipelineDescriptor ps_desc = {
+        .layout = pl,
+        .vertex = {
+            .module = shader_module1,
+            .entryPoint = "v_main",
+            .bufferCount = 1,
+            .buffers = &vbuf_layout
+        },
+        .primitive = {
+            .topology = WGPUPrimitiveTopology_TriangleList
+        },
+        .depthStencil = &ds_state,
+        .multisample = {
+            .count = 1,
+            .mask = 0xFFFFFFFF
+        },
+        .fragment = &fs
+    };
+    ps = wgpuDeviceCreateRenderPipeline(d.device, &ps_desc);
+
+    WGPUBindGroupEntry bg_entry = {
+        .buffer = ubuf,
+        .offset = 0,
+        .size = 64
+    };
+    WGPUBindGroupDescriptor bg_desc = {
+        .layout = bgl,
+        .entryCount = 1,
+        .entries = &bg_entry
+    };
+    bg = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
+}
+
+SceneData::~SceneData()
+{
+    wgpuBindGroupRelease(bg);
+    wgpuRenderPipelineRelease(ps);
+    wgpuPipelineLayoutRelease(pl);
+    wgpuBindGroupLayoutRelease(bgl);
+    wgpuBufferDestroy(ubuf);
+    wgpuBufferDestroy(vbuf);
+    wgpuShaderModuleRelease(shader_module1);
+}
 
 void Scene::init()
 {
-    sd = new SceneData;
+    sd.reset(new SceneData);
 }
 
 void Scene::cleanup()
 {
-    delete sd;
-    sd = nullptr;
+    sd.reset();
 }
 
 void Scene::render()
 {
     if (sd->last_fb_size != d.fb_size) {
         sd->last_fb_size = d.fb_size;
-        sd->projection = HMM_M4D(1.0f);
-        //sd->projection = HMM_Perspective_RH_ZO(45.0f, float(d.fb_size.width) / d.fb_size.height, 0.01f, 1000.0f);
-        wgpuQueueWriteBuffer(d.queue, sd->ubuf, 0, &sd->projection.Elements[0][0], 64);
+        HMM_Mat4 projection = HMM_Perspective_RH_ZO(45.0f, float(d.fb_size.width) / d.fb_size.height, 0.01f, 1000.0f);
+        HMM_Mat4 view = HMM_Translate(HMM_V3(0.0f, 0.0f, -4.0f));
+        HMM_Mat4 mvp = HMM_Mul(projection, view);
+        wgpuQueueWriteBuffer(d.queue, sd->ubuf, 0, &mvp.Elements[0][0], 64);
     }
 
     WGPUColor clear_color = { 0.0f, 1.0f, 0.0f, 1.0f };
