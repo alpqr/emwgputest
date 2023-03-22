@@ -12,6 +12,17 @@
 #define HANDMADE_MATH_USE_DEGREES
 #include "../3rdparty/HandmadeMath/HandmadeMath.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "../3rdparty/stb/stb_image.h"
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../3rdparty/stb/stb_image_write.h"
+
+#define TINYEXR_IMPLEMENTATION
+#define TINYEXR_USE_MINIZ 0
+#define TINYEXR_USE_STB_ZLIB 1
+#include "../3rdparty/tinyexr/tinyexr.h"
+
 struct Size
 {
     uint32_t width = 0;
@@ -178,6 +189,101 @@ static void load_web_texture(const char *uri, LoadWebTextureCallback callback)
 {
     d.pending_web_texture_loads.push_back({ uri, callback });
     _begin_load_web_texture(reinterpret_cast<int>(d.device), uri);
+}
+
+static WGPUTexture load_texture(const char *filename)
+{
+    int w, h, n;
+    unsigned char *data = stbi_load(filename, &w, &h, &n, 4);
+    if (!data) {
+        printf("load_texture: %s\n", stbi_failure_reason());
+        return nullptr;
+    }
+
+    WGPUTextureFormat view_format = WGPUTextureFormat_RGBA8Unorm;
+    WGPUTextureDescriptor desc = {
+        .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+        .dimension = WGPUTextureDimension_2D,
+        .size = {
+            .width = uint32_t(w),
+            .height = uint32_t(h),
+            .depthOrArrayLayers = 1
+        },
+        .format = WGPUTextureFormat_RGBA8Unorm,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+        .viewFormatCount = 1,
+        .viewFormats = &view_format
+    };
+    WGPUTexture texture = wgpuDeviceCreateTexture(d.device, &desc);
+
+    WGPUImageCopyTexture dst_desc = {
+        .texture = texture
+    };
+    WGPUTextureDataLayout data_layout = {
+        .offset = 0,
+        .bytesPerRow = uint32_t(w * 4),
+        .rowsPerImage = uint32_t(h)
+    };
+    WGPUExtent3D write_size = {
+        .width = uint32_t(w),
+        .height = uint32_t(h),
+        .depthOrArrayLayers = 1
+    };
+    wgpuQueueWriteTexture(d.queue, &dst_desc, data, w * h * 4, &data_layout, &write_size);
+
+    stbi_image_free(data);
+    return texture;
+}
+
+static WGPUTexture load_exr_simple_f32(const char *filename)
+{
+    float *data;
+    int w, h;
+    const char *err = nullptr;
+    const int ret = LoadEXR(&data, &w, &h, filename, &err);
+    if (ret != TINYEXR_SUCCESS) {
+        if (err) {
+            printf("load_exr: %s\n", err);
+            FreeEXRErrorMessage(err);
+        }
+        return nullptr;
+    }
+
+    WGPUTextureFormat view_format = WGPUTextureFormat_RGBA32Float;
+    WGPUTextureDescriptor desc = {
+        .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+        .dimension = WGPUTextureDimension_2D,
+        .size = {
+            .width = uint32_t(w),
+            .height = uint32_t(h),
+            .depthOrArrayLayers = 1
+        },
+        .format = WGPUTextureFormat_RGBA32Float,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+        .viewFormatCount = 1,
+        .viewFormats = &view_format
+    };
+    WGPUTexture texture = wgpuDeviceCreateTexture(d.device, &desc);
+
+    WGPUImageCopyTexture dst_desc = {
+        .texture = texture
+    };
+    WGPUTextureDataLayout data_layout = {
+        .offset = 0,
+        .bytesPerRow = uint32_t(w * 16),
+        .rowsPerImage = uint32_t(h)
+    };
+    WGPUExtent3D write_size = {
+        .width = uint32_t(w),
+        .height = uint32_t(h),
+        .depthOrArrayLayers = 1
+    };
+    wgpuQueueWriteTexture(d.queue, &dst_desc, data, w * h * 16, &data_layout, &write_size);
+
+    free(data);
+    return texture;
 }
 
 static void update_size()
@@ -485,11 +591,14 @@ struct SceneData
     WGPUBindGroupLayout bgl = nullptr;
     WGPUPipelineLayout pl = nullptr;
     WGPURenderPipeline ps = nullptr;
-    WGPUBindGroup bg = nullptr;
 
-    WGPUTexture texture = nullptr;
+    WGPUBindGroup bg_rgba = nullptr;
+    WGPUBindGroup bg_float = nullptr;
+    WGPUTexture texturergba = nullptr;
+    WGPUTexture texturefloat = nullptr;
     WGPUSampler sampler;
-    WGPUTextureView textureView;
+    WGPUTextureView texturefloatView;
+    WGPUTextureView texturergbaView;
 
     float rotation = 0.0f;
     HMM_Mat4 projection_matrix;
@@ -498,15 +607,20 @@ struct SceneData
 
 void SceneData::start_load_assets()
 {
-    load_web_texture("test.png", [this](WGPUTexture tex) {
-        texture = tex;
-        printf("texture is ready %p\n", texture);
-    });
+    texturergba = load_texture("test.png");
+    texturefloat = load_exr_simple_f32("test.exr");
+    printf("texturergba = %p texturefloat=%p\n", texturergba, texturefloat);
 }
 
 bool SceneData::are_assets_ready() const
 {
-    return texture != nullptr;
+    return true;
+}
+
+template <class Int>
+inline Int aligned(Int v, Int byteAlign)
+{
+    return (v + byteAlign - 1) & ~(byteAlign - 1);
 }
 
 void SceneData::init_with_assets()
@@ -514,23 +628,29 @@ void SceneData::init_with_assets()
     shader_module1 = create_shader_module(shaders1);
     vbuf_size = sizeof(vertexData);
     vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex, vbuf_size, vertexData);
-    ubuf = create_uniform_buffer(UBUF_SIZE1);
+    ubuf = create_uniform_buffer(aligned(UBUF_SIZE1, 256u) * 2);
 
     WGPUSamplerDescriptor samplerDesc = {
         .addressModeU = WGPUAddressMode_ClampToEdge,
-        .addressModeV = WGPUAddressMode_ClampToEdge,
-        .magFilter = WGPUFilterMode_Linear,
-        .minFilter = WGPUFilterMode_Linear
+        .addressModeV = WGPUAddressMode_ClampToEdge
+        // Nearest, to play nice if RGBA32F is non-filterable
     };
     sampler = wgpuDeviceCreateSampler(d.device, &samplerDesc);
 
-    WGPUTextureViewDescriptor viewDesc = {
+    WGPUTextureViewDescriptor viewDesc_rgba = {
         .format = WGPUTextureFormat_RGBA8Unorm,
         .dimension = WGPUTextureViewDimension_2D,
         .mipLevelCount = 1,
         .arrayLayerCount = 1
     };
-    textureView = wgpuTextureCreateView(texture, &viewDesc);
+    texturergbaView = wgpuTextureCreateView(texturergba, &viewDesc_rgba);
+    WGPUTextureViewDescriptor viewDesc_float = {
+        .format = WGPUTextureFormat_RGBA32Float,
+        .dimension = WGPUTextureViewDimension_2D,
+        .mipLevelCount = 1,
+        .arrayLayerCount = 1
+    };
+    texturefloatView = wgpuTextureCreateView(texturefloat, &viewDesc_float);
 
     WGPUBindGroupLayoutEntry bgl_entries[] = {
         {
@@ -538,6 +658,7 @@ void SceneData::init_with_assets()
             .visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment,
             .buffer = {
                 .type = WGPUBufferBindingType_Uniform,
+                .hasDynamicOffset = true,
                 .minBindingSize = UBUF_SIZE1
             }
         },
@@ -545,7 +666,7 @@ void SceneData::init_with_assets()
             .binding = 1,
             .visibility = WGPUShaderStage_Fragment,
             .texture = {
-                .sampleType = WGPUTextureSampleType_Float,
+                .sampleType = WGPUTextureSampleType_UnfilterableFloat,
                 .viewDimension = WGPUTextureViewDimension_2D
             }
         },
@@ -553,7 +674,7 @@ void SceneData::init_with_assets()
             .binding = 2,
             .visibility = WGPUShaderStage_Fragment,
             .sampler {
-                .type = WGPUSamplerBindingType_Filtering
+                .type = WGPUSamplerBindingType_NonFiltering // for RGBA32F
             }
         }
     };
@@ -634,7 +755,7 @@ void SceneData::init_with_assets()
         },
         {
             .binding = 1,
-            .textureView = textureView
+            .textureView = texturergbaView
         },
         {
             .binding = 2,
@@ -646,19 +767,24 @@ void SceneData::init_with_assets()
         .entryCount = 3,
         .entries = bg_entries
     };
-    bg = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
+    bg_rgba = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
+    bg_entries[1].textureView = texturefloatView;
+    bg_float = wgpuDeviceCreateBindGroup(d.device, &bg_desc);
 
     view_matrix = HMM_Translate(HMM_V3(0.0f, 0.0f, -4.0f));
 }
 
 SceneData::~SceneData()
 {
-    wgpuTextureDestroy(texture);
-    wgpuBindGroupRelease(bg);
+    wgpuTextureDestroy(texturergba);
+    wgpuTextureDestroy(texturefloat);
+    wgpuBindGroupRelease(bg_rgba);
+    wgpuBindGroupRelease(bg_float);
     wgpuRenderPipelineRelease(ps);
     wgpuPipelineLayoutRelease(pl);
     wgpuBindGroupLayoutRelease(bgl);
-    wgpuTextureViewRelease(textureView);
+    wgpuTextureViewRelease(texturergbaView);
+    wgpuTextureViewRelease(texturefloatView);
     wgpuSamplerRelease(sampler);
     wgpuBufferDestroy(ubuf);
     wgpuBufferDestroy(vbuf);
@@ -695,13 +821,23 @@ void Scene::render()
         sd->projection_matrix = HMM_Perspective_RH_ZO(45.0f, float(d.fb_size.width) / d.fb_size.height, 0.01f, 1000.0f);
     }
 
-    HMM_Mat4 model_matrix = HMM_Rotate_RH(sd->rotation, HMM_V3(0.0f, 1.0f, 0.0f));
     HMM_Mat4 view_projection_matrix = HMM_Mul(sd->projection_matrix, sd->view_matrix);
-    HMM_Mat4 mvp = HMM_Mul(view_projection_matrix, model_matrix);
+    HMM_Mat4 rotation = HMM_Rotate_RH(sd->rotation, HMM_V3(0.0f, 1.0f, 0.0f));
+
+    HMM_Mat4 translation = HMM_Translate(HMM_V3(-2.0f, 0.0f, 0.0f));
+    HMM_Mat4 model_matrix1 = HMM_Mul(translation, rotation);
+    translation = HMM_Translate(HMM_V3(2.0f, 0.0f, 0.0f));
+    HMM_Mat4 model_matrix2 = HMM_Mul(translation, rotation);
 
     UBufStagingArea u = next_ubuf_staging_area_for_current_frame();
-    memcpy(u.p, &mvp.Elements[0][0], 16 * sizeof(float));
+    HMM_Mat4 mvp = HMM_Mul(view_projection_matrix, model_matrix1);
+    memcpy(u.p, &mvp.Elements[0][0], 64);
+    mvp = HMM_Mul(view_projection_matrix, model_matrix2);
+    memcpy(u.p + 64, &mvp.Elements[0][0], 64);
+
+    const uint32_t second_buffer_start_offset = aligned(SceneData::UBUF_SIZE1, 256u);
     enqueue_ubuf_staging_copy(u, sd->ubuf, SceneData::UBUF_SIZE1);
+    enqueue_ubuf_staging_copy(u, sd->ubuf, SceneData::UBUF_SIZE1, 64, second_buffer_start_offset);
 
     sd->rotation += 1.0f;
 
@@ -709,8 +845,12 @@ void Scene::render()
     WGPURenderPassEncoder pass = begin_render_pass(clear_color);
 
     wgpuRenderPassEncoderSetPipeline(pass, sd->ps);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, sd->bg, 0, nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, sd->vbuf, 0, sd->vbuf_size);
+    uint32_t dynamic_offset = 0;
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, sd->bg_rgba, 1, &dynamic_offset);
+    wgpuRenderPassEncoderDraw(pass, 6, 1, 0, 0);
+    dynamic_offset = second_buffer_start_offset;
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, sd->bg_float, 1, &dynamic_offset);
     wgpuRenderPassEncoderDraw(pass, 6, 1, 0, 0);
 
     end_render_pass(pass);

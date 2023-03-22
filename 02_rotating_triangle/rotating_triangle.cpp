@@ -327,6 +327,14 @@ static void cleanup()
         wgpuSurfaceRelease(d.surface);
         d.surface = nullptr;
     }
+    if (d.queue) {
+        wgpuQueueRelease(d.queue);
+        d.queue = nullptr;
+    }
+    if (d.device) {
+        wgpuDeviceRelease(d.device);
+        d.device = nullptr;
+    }
 }
 
 static void frame()
