@@ -84,10 +84,15 @@ struct
     std::vector<WGPUBuffer> active_ubuf_staging_buffers;
 
     std::vector<std::pair<std::string, LoadWebTextureCallback>> pending_web_texture_loads;
-    std::vector<uint32_t> gui_ibuf_offsets;
+    struct GuiBufOffset {
+        uint32_t v_offset;
+        uint32_t v_size;
+        uint32_t i_offset;
+        uint32_t i_size;
+    };
+    std::vector<GuiBufOffset> gui_buf_offsets;
     WGPUShaderModule gui_shader_module = nullptr;
     WGPUBuffer gui_vbuf = nullptr;
-    uint32_t gui_vbuf_size;
     WGPUBuffer gui_ibuf = nullptr;
     WGPUBuffer gui_ubuf = nullptr;
     WGPUTexture gui_font_texture = nullptr;
@@ -363,43 +368,47 @@ static void next_gui_frame()
     ImGui::Render();
 
     ImDrawData *draw = ImGui::GetDrawData();
-    d.gui_ibuf_offsets.clear();
-    d.gui_ibuf_offsets.reserve(draw->CmdListsCount);
+    d.gui_buf_offsets.clear();
+    d.gui_buf_offsets.reserve(draw->CmdListsCount);
     std::vector<ImDrawVert> vbuf_data;
     std::vector<ImDrawIdx> ibuf_data;
-    uint32_t vbuf_byte_size = 0;
-    uint32_t ibuf_byte_size = 0;
+    uint32_t vbuf_total_byte_size = 0;
+    uint32_t ibuf_total_byte_size = 0;
     for (int n = 0; n < draw->CmdListsCount; ++n) {
         const ImDrawList *cmd_list = draw->CmdLists[n];
-        uint32_t vbuf_offset = vbuf_byte_size;
-        vbuf_byte_size += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
+        uint32_t vbuf_offset = vbuf_total_byte_size;
+        vbuf_total_byte_size += cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
         std::copy(cmd_list->VtxBuffer.Data, cmd_list->VtxBuffer.Data + cmd_list->VtxBuffer.Size, std::back_inserter(vbuf_data));
-        uint32_t ibuf_offset = ibuf_byte_size;
-        ibuf_byte_size += cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx);
+        uint32_t ibuf_offset = ibuf_total_byte_size;
+        ibuf_total_byte_size += cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx);
         std::copy(cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Data + cmd_list->IdxBuffer.Size, std::back_inserter(ibuf_data));
-        d.gui_ibuf_offsets.push_back(ibuf_offset);
+        d.gui_buf_offsets.push_back({
+            vbuf_offset,
+            cmd_list->VtxBuffer.Size * sizeof(ImDrawVert),
+            ibuf_offset,
+            cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx)
+        });
     }
-    d.gui_vbuf_size = vbuf_byte_size;
 
-    if (d.gui_vbuf && wgpuBufferGetSize(d.gui_vbuf) < vbuf_byte_size) {
+    if (d.gui_vbuf && wgpuBufferGetSize(d.gui_vbuf) < vbuf_total_byte_size) {
         wgpuBufferDestroy(d.gui_vbuf);
         d.gui_vbuf = nullptr;
     }
 
     if (!d.gui_vbuf)
-        d.gui_vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst, vbuf_byte_size, vbuf_data.data());
+        d.gui_vbuf = create_buffer_with_data(WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst, vbuf_total_byte_size, vbuf_data.data());
     else
-        wgpuQueueWriteBuffer(d.queue, d.gui_vbuf, 0, vbuf_data.data(), vbuf_byte_size);
+        wgpuQueueWriteBuffer(d.queue, d.gui_vbuf, 0, vbuf_data.data(), vbuf_total_byte_size);
 
-    if (d.gui_ibuf && wgpuBufferGetSize(d.gui_ibuf) < ibuf_byte_size) {
+    if (d.gui_ibuf && wgpuBufferGetSize(d.gui_ibuf) < ibuf_total_byte_size) {
         wgpuBufferDestroy(d.gui_ibuf);
         d.gui_ibuf = nullptr;
     }
 
     if (!d.gui_ibuf)
-        d.gui_ibuf = create_buffer_with_data(WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst, ibuf_byte_size, ibuf_data.data());
+        d.gui_ibuf = create_buffer_with_data(WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst, ibuf_total_byte_size, ibuf_data.data());
     else
-        wgpuQueueWriteBuffer(d.queue, d.gui_ibuf, 0, ibuf_data.data(), ibuf_byte_size);
+        wgpuQueueWriteBuffer(d.queue, d.gui_ibuf, 0, ibuf_data.data(), ibuf_total_byte_size);
 
     if (d.last_gui_win_size != d.win_size) {
         d.last_gui_win_size = d.win_size;
@@ -419,11 +428,18 @@ static void render_gui(WGPURenderPassEncoder pass)
         for (int i = 0; i < cmd_list->CmdBuffer.Size; ++i) {
             const ImDrawCmd *cmd = &cmd_list->CmdBuffer[i];
             if (!cmd->UserCallback) {
-                const uint32_t index_offset = d.gui_ibuf_offsets[n] + uintptr_t(index_buf_offset);
-                // ### clamp clip rect
-                wgpuRenderPassEncoderSetScissorRect(pass, cmd->ClipRect.x, cmd->ClipRect.y, cmd->ClipRect.z - cmd->ClipRect.x, cmd->ClipRect.w - cmd->ClipRect.y);
+                const uint32_t index_offset = d.gui_buf_offsets[n].i_offset + uintptr_t(index_buf_offset);
+                float sx = cmd->ClipRect.x;
+                float sy = cmd->ClipRect.y;
+                float sw = cmd->ClipRect.z - cmd->ClipRect.x;
+                float sh = cmd->ClipRect.w - cmd->ClipRect.y;
+                sx = std::max(0.0f, sx);
+                sy = std::max(0.0f, sy);
+                sw = std::min<float>(d.fb_size.width, sw);
+                sh = std::min<float>(d.fb_size.height, sh);
+                wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
                 wgpuRenderPassEncoderSetPipeline(pass, d.gui_ps);
-                wgpuRenderPassEncoderSetVertexBuffer(pass, 0, d.gui_vbuf, 0, d.gui_vbuf_size);
+                wgpuRenderPassEncoderSetVertexBuffer(pass, 0, d.gui_vbuf, d.gui_buf_offsets[n].v_offset, d.gui_buf_offsets[n].v_size);
                 wgpuRenderPassEncoderSetIndexBuffer(pass, d.gui_ibuf, WGPUIndexFormat_Uint32, index_offset, cmd->ElemCount * 4);
                 wgpuRenderPassEncoderSetBindGroup(pass, 0, d.gui_bg, 0, nullptr);
                 wgpuRenderPassEncoderDrawIndexed(pass, cmd->ElemCount, 1, 0, 0, 0);
@@ -701,7 +717,7 @@ static EM_BOOL wheel_callback(int emsc_type, const EmscriptenWheelEvent *emsc_ev
 {
     ImGuiIO &io(ImGui::GetIO());
     const float x = float(emsc_event->deltaX / 120.0f);
-    const float y = float(emsc_event->deltaY / 120.0f);
+    const float y = float(emsc_event->deltaY / -120.0f);
     io.AddMouseWheelEvent(x, y);
     return true;
 }
