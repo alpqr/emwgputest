@@ -7,8 +7,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_executable(textures textures.cpp)
 
-set(PRELOAD "--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/test.png@test.png --preload-file ${CMAKE_CURRENT_SOURCE_DIR}/test.exr@test.exr")
-set_target_properties(textures PROPERTIES LINK_FLAGS "-s USE_WEBGPU=1 ${PRELOAD}")
+set(PRELOAD "--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/test.png@test.png --preload-file ${CMAKE_CURRENT_SOURCE_DIR}/OpenfootageNET_lowerAustria01-1024.exr@test.exr")
+set(MEM_FLAGS "-sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH=0")
+set_target_properties(textures PROPERTIES LINK_FLAGS "-s USE_WEBGPU=1 ${MEM_FLAGS} ${PRELOAD}")
 
 add_custom_command(
     TARGET textures
