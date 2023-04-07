@@ -12,17 +12,6 @@
 #define HANDMADE_MATH_USE_DEGREES
 #include "../3rdparty/HandmadeMath/HandmadeMath.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "../3rdparty/stb/stb_image.h"
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../3rdparty/stb/stb_image_write.h"
-
-#define TINYEXR_IMPLEMENTATION
-#define TINYEXR_USE_MINIZ 0
-#define TINYEXR_USE_STB_ZLIB 1
-#include "../3rdparty/tinyexr/tinyexr.h"
-
 #include "imgui.h"
 
 // the imgui default
@@ -60,8 +49,6 @@ struct Scene
 
 static const uint32_t MAX_UBUF_SIZE = 65536;
 
-using LoadWebTextureCallback = std::function<void(WGPUTexture)>;
-
 struct
 {
     Size win_size;
@@ -83,7 +70,6 @@ struct
     std::vector<WGPUBuffer> free_ubuf_staging_buffers;
     std::vector<WGPUBuffer> active_ubuf_staging_buffers;
 
-    std::vector<std::pair<std::string, LoadWebTextureCallback>> pending_web_texture_loads;
     struct GuiBufOffset {
         uint32_t v_offset;
         uint32_t v_size;
@@ -179,138 +165,116 @@ static void enqueue_ubuf_staging_copy(const UBufStagingArea &u, WGPUBuffer dst, 
     wgpuCommandEncoderCopyBufferToBuffer(d.res_encoder, u.buf, src_offset, dst, dst_offset, size);
 }
 
-extern "C" {
-EMSCRIPTEN_KEEPALIVE void _web_texture_loaded(int textureId, const char *uri)
+static void releaseAndNull(WGPUTexture &obj)
 {
-    WGPUTexture texture = reinterpret_cast<WGPUTexture>(textureId);
-    for (auto it = d.pending_web_texture_loads.begin(); it != d.pending_web_texture_loads.end(); ++it) {
-        if (it->first == uri) {
-            it->second(texture);
-            d.pending_web_texture_loads.erase(it);
-            break;
-        }
+    if (obj) {
+        wgpuTextureDestroy(obj);
+        obj = nullptr;
     }
 }
-}
 
-EM_JS(void, _begin_load_web_texture, (int deviceId, const char *uri), {
-    const device = WebGPU.mgrDevice.get(deviceId);
-    fetch(UTF8ToString(uri)).then((response) => {
-        response.blob().then((blob) => {
-            createImageBitmap(blob).then((imgBitmap) => {
-                const textureDescriptor = {
-                    size: { width: imgBitmap.width, height: imgBitmap.height },
-                    format: 'rgba8unorm',
-                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
-                };
-                const texture = device.createTexture(textureDescriptor);
-                const textureId = WebGPU.mgrTexture.create(texture);
-                device.queue.copyExternalImageToTexture({ source: imgBitmap }, { texture: texture }, textureDescriptor.size);
-                __web_texture_loaded(textureId, uri);
-            });
-        });
-    });
-});
-
-static void load_web_texture(const char *uri, LoadWebTextureCallback callback)
+static void releaseAndNull(WGPUTextureView &obj)
 {
-    d.pending_web_texture_loads.push_back({ uri, callback });
-    _begin_load_web_texture(reinterpret_cast<int>(d.device), uri);
-}
-
-static WGPUTexture load_texture(const char *filename)
-{
-    int w, h, n;
-    unsigned char *data = stbi_load(filename, &w, &h, &n, 4);
-    if (!data) {
-        printf("load_texture: %s\n", stbi_failure_reason());
-        return nullptr;
+    if (obj) {
+        wgpuTextureViewRelease(obj);
+        obj = nullptr;
     }
-
-    WGPUTextureFormat view_format = WGPUTextureFormat_RGBA8Unorm;
-    WGPUTextureDescriptor desc = {
-        .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
-        .dimension = WGPUTextureDimension_2D,
-        .size = {
-            .width = uint32_t(w),
-            .height = uint32_t(h),
-            .depthOrArrayLayers = 1
-        },
-        .format = WGPUTextureFormat_RGBA8Unorm,
-        .mipLevelCount = 1,
-        .sampleCount = 1,
-        .viewFormatCount = 1,
-        .viewFormats = &view_format
-    };
-    WGPUTexture texture = wgpuDeviceCreateTexture(d.device, &desc);
-
-    WGPUImageCopyTexture dst_desc = {
-        .texture = texture
-    };
-    WGPUTextureDataLayout data_layout = {
-        .offset = 0,
-        .bytesPerRow = uint32_t(w * 4),
-        .rowsPerImage = uint32_t(h)
-    };
-    WGPUExtent3D write_size = {
-        .width = uint32_t(w),
-        .height = uint32_t(h),
-        .depthOrArrayLayers = 1
-    };
-    wgpuQueueWriteTexture(d.queue, &dst_desc, data, w * h * 4, &data_layout, &write_size);
-
-    stbi_image_free(data);
-    return texture;
 }
 
-static WGPUTexture load_exr_simple_f32(const char *filename)
+static void releaseAndNull(WGPUSampler &obj)
 {
-    float *data;
-    int w, h;
-    const char *err = nullptr;
-    const int ret = LoadEXR(&data, &w, &h, filename, &err);
-    if (ret != TINYEXR_SUCCESS) {
-        if (err) {
-            printf("load_exr: %s\n", err);
-            FreeEXRErrorMessage(err);
-        }
-        return nullptr;
+    if (obj) {
+        wgpuSamplerRelease(obj);
+        obj = nullptr;
     }
+}
 
-    WGPUTextureFormat view_format = WGPUTextureFormat_RGBA32Float;
-    WGPUTextureDescriptor desc = {
-        .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
-        .dimension = WGPUTextureDimension_2D,
-        .size = {
-            .width = uint32_t(w),
-            .height = uint32_t(h),
-            .depthOrArrayLayers = 1
-        },
-        .format = WGPUTextureFormat_RGBA32Float,
-        .mipLevelCount = 1,
-        .sampleCount = 1,
-        .viewFormatCount = 1,
-        .viewFormats = &view_format
-    };
-    WGPUTexture texture = wgpuDeviceCreateTexture(d.device, &desc);
+static void releaseAndNull(WGPUBuffer &obj)
+{
+    if (obj) {
+        wgpuBufferDestroy(obj);
+        obj = nullptr;
+    }
+}
 
-    WGPUImageCopyTexture dst_desc = {
-        .texture = texture
-    };
-    WGPUTextureDataLayout data_layout = {
-        .offset = 0,
-        .bytesPerRow = uint32_t(w * 16),
-        .rowsPerImage = uint32_t(h)
-    };
-    WGPUExtent3D write_size = {
-        .width = uint32_t(w),
-        .height = uint32_t(h),
-        .depthOrArrayLayers = 1
-    };
-    wgpuQueueWriteTexture(d.queue, &dst_desc, data, w * h * 16, &data_layout, &write_size);
+static void releaseAndNull(WGPUShaderModule &obj)
+{
+    if (obj) {
+        wgpuShaderModuleRelease(obj);
+        obj = nullptr;
+    }
+}
 
-    free(data);
-    return texture;
+static void releaseAndNull(WGPUBindGroupLayout &obj)
+{
+    if (obj) {
+        wgpuBindGroupLayoutRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUPipelineLayout &obj)
+{
+    if (obj) {
+        wgpuPipelineLayoutRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPURenderPipeline &obj)
+{
+    if (obj) {
+        wgpuRenderPipelineRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUBindGroup &obj)
+{
+    if (obj) {
+        wgpuBindGroupRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUCommandEncoder &obj)
+{
+    if (obj) {
+        wgpuCommandEncoderRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUSwapChain &obj)
+{
+    if (obj) {
+        wgpuSwapChainRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUSurface &obj)
+{
+    if (obj) {
+        wgpuSurfaceRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUQueue &obj)
+{
+    if (obj) {
+        wgpuQueueRelease(obj);
+        obj = nullptr;
+    }
+}
+
+static void releaseAndNull(WGPUDevice &obj)
+{
+    if (obj) {
+        wgpuDeviceRelease(obj);
+        obj = nullptr;
+    }
 }
 
 static WGPUTexture rebuild_gui_font_atlas()
@@ -660,12 +624,18 @@ static void update_size()
 
 static EM_BOOL size_changed(int event_type, const EmscriptenUiEvent *ui_event, void *user_data)
 {
+    if (d.quit)
+        return false;
+
     update_size();
     return true;
 }
 
 static EM_BOOL mouse_callback(int emsc_type, const EmscriptenMouseEvent *emsc_event, void *user_data)
 {
+    if (d.quit)
+        return false;
+
     ImGuiIO &io(ImGui::GetIO());
     const float x = float(emsc_event->targetX);
     const float y = float(emsc_event->targetY);
@@ -715,6 +685,9 @@ static EM_BOOL mouse_callback(int emsc_type, const EmscriptenMouseEvent *emsc_ev
 
 static EM_BOOL wheel_callback(int emsc_type, const EmscriptenWheelEvent *emsc_event, void *user_data)
 {
+    if (d.quit)
+        return false;
+
     ImGuiIO &io(ImGui::GetIO());
     const float x = float(emsc_event->deltaX / 120.0f);
     const float y = float(emsc_event->deltaY / -120.0f);
@@ -722,23 +695,278 @@ static EM_BOOL wheel_callback(int emsc_type, const EmscriptenWheelEvent *emsc_ev
     return true;
 }
 
-static EM_BOOL key_callback(int emsc_type, const EmscriptenKeyboardEvent *emsc_event, void *user_data)
+static ImGuiKey mapKey(int k, bool *consume)
 {
-    // ###
-
-    bool result = false; // don't consume
-    switch (emsc_type) {
-    case EMSCRIPTEN_EVENT_KEYDOWN:
-        break;
-    case EMSCRIPTEN_EVENT_KEYUP:
-        break;
-    case EMSCRIPTEN_EVENT_KEYPRESS:
-        break;
+    *consume = false;
+    switch (k) {
+    case 8:
+        *consume = true;
+        return ImGuiKey_Backspace;
+    case 9:
+        *consume = true;
+        return ImGuiKey_Tab;
+    case 13:
+        *consume = true;
+        return ImGuiKey_Enter;
+    case 16:
+        *consume = true;
+        return ImGuiKey_LeftShift;
+    case 17:
+        *consume = true;
+        return ImGuiKey_LeftCtrl;
+    case 18:
+        *consume = true;
+        return ImGuiKey_LeftAlt;
+    case 20:
+        *consume = true;
+        return ImGuiKey_CapsLock;
+    case 27:
+        *consume = true;
+        return ImGuiKey_Escape;
+    case 32:
+        return ImGuiKey_Space;
+    case 33:
+        *consume = true;
+        return ImGuiKey_PageUp;
+    case 34:
+        *consume = true;
+        return ImGuiKey_PageDown;
+    case 35:
+        *consume = true;
+        return ImGuiKey_End;
+    case 36:
+        *consume = true;
+        return ImGuiKey_Home;
+    case 37:
+        *consume = true;
+        return ImGuiKey_LeftArrow;
+    case 38:
+        *consume = true;
+        return ImGuiKey_UpArrow;
+    case 39:
+        *consume = true;
+        return ImGuiKey_RightArrow;
+    case 40:
+        *consume = true;
+        return ImGuiKey_DownArrow;
+    case 45:
+        *consume = true;
+        return ImGuiKey_Insert;
+    case 46:
+        *consume = true;
+        return ImGuiKey_Delete;
+    case 48:
+        return ImGuiKey_0;
+    case 49:
+        return ImGuiKey_1;
+    case 50:
+        return ImGuiKey_2;
+    case 51:
+        return ImGuiKey_3;
+    case 52:
+        return ImGuiKey_4;
+    case 53:
+        return ImGuiKey_5;
+    case 54:
+        return ImGuiKey_6;
+    case 55:
+        return ImGuiKey_7;
+    case 56:
+        return ImGuiKey_8;
+    case 57:
+        return ImGuiKey_9;
+    case 59:
+        return ImGuiKey_Semicolon;
+    case 64:
+        return ImGuiKey_Equal;
+    case 65:
+        return ImGuiKey_A;
+    case 66:
+        return ImGuiKey_B;
+    case 67:
+        return ImGuiKey_C;
+    case 68:
+        return ImGuiKey_D;
+    case 69:
+        return ImGuiKey_E;
+    case 70:
+        return ImGuiKey_F;
+    case 71:
+        return ImGuiKey_G;
+    case 72:
+        return ImGuiKey_H;
+    case 73:
+        return ImGuiKey_I;
+    case 74:
+        return ImGuiKey_J;
+    case 75:
+        return ImGuiKey_K;
+    case 76:
+        return ImGuiKey_L;
+    case 77:
+        return ImGuiKey_M;
+    case 78:
+        return ImGuiKey_N;
+    case 79:
+        return ImGuiKey_O;
+    case 80:
+        return ImGuiKey_P;
+    case 81:
+        return ImGuiKey_Q;
+    case 82:
+        return ImGuiKey_R;
+    case 83:
+        return ImGuiKey_S;
+    case 84:
+        return ImGuiKey_T;
+    case 85:
+        return ImGuiKey_U;
+    case 86:
+        return ImGuiKey_V;
+    case 87:
+        return ImGuiKey_W;
+    case 88:
+        return ImGuiKey_X;
+    case 89:
+        return ImGuiKey_Y;
+    case 90:
+        return ImGuiKey_Z;
+    case 91:
+        *consume = true;
+        return ImGuiKey_LeftSuper;
+    case 93:
+        *consume = true;
+        return ImGuiKey_Menu;
+    case 96:
+        return ImGuiKey_Keypad0;
+    case 97:
+        return ImGuiKey_Keypad1;
+    case 98:
+        return ImGuiKey_Keypad2;
+    case 99:
+        return ImGuiKey_Keypad3;
+    case 100:
+        return ImGuiKey_Keypad4;
+    case 101:
+        return ImGuiKey_Keypad5;
+    case 102:
+        return ImGuiKey_Keypad6;
+    case 103:
+        return ImGuiKey_Keypad7;
+    case 104:
+        return ImGuiKey_Keypad8;
+    case 105:
+        return ImGuiKey_Keypad9;
+    case 106:
+        return ImGuiKey_KeypadMultiply;
+    case 107:
+        return ImGuiKey_KeypadAdd;
+    case 109:
+        return ImGuiKey_KeypadSubtract;
+    case 110:
+        return ImGuiKey_KeypadDecimal;
+    case 111:
+        return ImGuiKey_KeypadDivide;
+    case 112:
+        *consume = true;
+        return ImGuiKey_F1;
+    case 113:
+        *consume = true;
+        return ImGuiKey_F2;
+    case 114:
+        *consume = true;
+        return ImGuiKey_F3;
+    case 115:
+        *consume = true;
+        return ImGuiKey_F4;
+    case 116:
+        *consume = true;
+        return ImGuiKey_F5;
+    case 117:
+        *consume = true;
+        return ImGuiKey_F6;
+    case 118:
+        *consume = true;
+        return ImGuiKey_F7;
+    case 119:
+        *consume = true;
+        return ImGuiKey_F8;
+    case 120:
+        *consume = true;
+        return ImGuiKey_F9;
+    case 121:
+        *consume = true;
+        return ImGuiKey_F10;
+    case 122:
+        return ImGuiKey_F11;
+    case 123:
+        return ImGuiKey_F12;
+    case 144:
+        *consume = true;
+        return ImGuiKey_NumLock;
+    case 145:
+        *consume = true;
+        return ImGuiKey_ScrollLock;
+    case 173:
+        return ImGuiKey_Minus;
+    case 186:
+        return ImGuiKey_Semicolon;
+    case 187:
+        return ImGuiKey_Equal;
+    case 188:
+        return ImGuiKey_Comma;
+    case 189:
+        return ImGuiKey_Minus;
+    case 190:
+        return ImGuiKey_Period;
+    case 191:
+        return ImGuiKey_Slash;
+    case 192:
+        return ImGuiKey_GraveAccent;
+    case 219:
+        return ImGuiKey_LeftBracket;
+    case 220:
+        return ImGuiKey_Backslash;
+    case 221:
+        return ImGuiKey_RightBracket;
+    case 222:
+        return ImGuiKey_Apostrophe;
+    case 224:
+        *consume = true;
+        return ImGuiKey_LeftSuper;
     default:
-
         break;
     }
-    return result;
+    return ImGuiKey_None;
+}
+
+static EM_BOOL key_callback(int emsc_type, const EmscriptenKeyboardEvent *emsc_event, void *user_data)
+{
+    if (d.quit)
+        return false;
+
+    ImGuiIO &io(ImGui::GetIO());
+    io.AddKeyEvent(ImGuiKey_ModCtrl, emsc_event->ctrlKey);
+    io.AddKeyEvent(ImGuiKey_ModShift, emsc_event->shiftKey);
+    io.AddKeyEvent(ImGuiKey_ModAlt, emsc_event->altKey);
+    io.AddKeyEvent(ImGuiKey_ModSuper, emsc_event->metaKey);
+
+    bool consume = false;
+    switch (emsc_type) {
+    case EMSCRIPTEN_EVENT_KEYDOWN:
+        io.AddKeyEvent(mapKey(emsc_event->keyCode, &consume), true);
+        break;
+    case EMSCRIPTEN_EVENT_KEYUP:
+        io.AddKeyEvent(mapKey(emsc_event->keyCode, &consume), false);
+        break;
+    case EMSCRIPTEN_EVENT_KEYPRESS:
+        if (strlen(emsc_event->key))
+            io.AddInputCharactersUTF8(emsc_event->key);
+        break;
+    default:
+        break;
+    }
+    return consume;
 }
 
 static void ensure_attachments()
@@ -746,15 +974,8 @@ static void ensure_attachments()
     if (d.ds && d.ds_view && d.attachments_size == d.fb_size)
         return;
 
-    if (d.ds_view) {
-        wgpuTextureViewRelease(d.ds_view);
-        d.ds_view = nullptr;
-    }
-
-    if (d.ds) {
-        wgpuTextureDestroy(d.ds);
-        d.ds = nullptr;
-    }
+    releaseAndNull(d.ds_view);
+    releaseAndNull(d.ds);
 
     d.attachments_size = d.fb_size;
 
@@ -778,15 +999,9 @@ static void ensure_attachments()
 
 static void begin_frame()
 {
-    if (d.backbuffer) {
-        wgpuTextureViewRelease(d.backbuffer);
-        d.backbuffer = nullptr;
-    }
-
+    releaseAndNull(d.backbuffer);
     d.backbuffer = wgpuSwapChainGetCurrentTextureView(d.swapchain);
-
     ensure_attachments();
-
     d.res_encoder = wgpuDeviceCreateCommandEncoder(d.device, nullptr);
     d.render_encoder = wgpuDeviceCreateCommandEncoder(d.device, nullptr);
 }
@@ -797,12 +1012,10 @@ static void end_frame()
         wgpuBufferUnmap(buf);
 
     WGPUCommandBuffer res_cb = wgpuCommandEncoderFinish(d.res_encoder, nullptr);
-    wgpuCommandEncoderRelease(d.res_encoder);
-    d.res_encoder = nullptr;
+    releaseAndNull(d.res_encoder);
 
     WGPUCommandBuffer render_cb = wgpuCommandEncoderFinish(d.render_encoder, nullptr);
-    wgpuCommandEncoderRelease(d.render_encoder);
-    d.render_encoder = nullptr;
+    releaseAndNull(d.render_encoder);
 
     WGPUCommandBuffer cbs[] = { res_cb, render_cb };
     wgpuQueueSubmit(d.queue, 2, cbs);
@@ -892,79 +1105,25 @@ static void cleanup()
 {
     d.scene.cleanup();
 
-    if (d.gui_font_texture) {
-        wgpuTextureDestroy(d.gui_font_texture);
-        d.gui_font_texture = nullptr;
-    }
-    if (d.gui_font_texture_view) {
-        wgpuTextureViewRelease(d.gui_font_texture_view);
-        d.gui_font_texture_view = nullptr;
-    }
-    if (d.gui_sampler) {
-        wgpuSamplerRelease(d.gui_sampler);
-        d.gui_sampler = nullptr;
-    }
-    if (d.gui_vbuf) {
-        wgpuBufferDestroy(d.gui_vbuf);
-        d.gui_vbuf = nullptr;
-    }
-    if (d.gui_ibuf) {
-        wgpuBufferDestroy(d.gui_ibuf);
-        d.gui_ibuf = nullptr;
-    }
-    if (d.gui_ubuf) {
-        wgpuBufferDestroy(d.gui_ubuf);
-        d.gui_ubuf = nullptr;
-    }
-    if (d.gui_shader_module) {
-        wgpuShaderModuleRelease(d.gui_shader_module);
-        d.gui_shader_module = nullptr;
-    }
-    if (d.gui_bgl) {
-        wgpuBindGroupLayoutRelease(d.gui_bgl);
-        d.gui_bgl = nullptr;
-    }
-    if (d.gui_pl) {
-        wgpuPipelineLayoutRelease(d.gui_pl);
-        d.gui_pl = nullptr;
-    }
-    if (d.gui_ps) {
-        wgpuRenderPipelineRelease(d.gui_ps);
-        d.gui_ps = nullptr;
-    }
-    if (d.gui_bg) {
-        wgpuBindGroupRelease(d.gui_bg);
-        d.gui_bg = nullptr;
-    }
+    releaseAndNull(d.gui_font_texture);
+    releaseAndNull(d.gui_font_texture_view);
+    releaseAndNull(d.gui_sampler);
+    releaseAndNull(d.gui_vbuf);
+    releaseAndNull(d.gui_ibuf);
+    releaseAndNull(d.gui_ubuf);
+    releaseAndNull(d.gui_shader_module);
+    releaseAndNull(d.gui_bgl);
+    releaseAndNull(d.gui_pl);
+    releaseAndNull(d.gui_ps);
+    releaseAndNull(d.gui_bg);
 
-    if (d.ds_view) {
-        wgpuTextureViewRelease(d.ds_view);
-        d.ds_view = nullptr;
-    }
-    if (d.ds) {
-        wgpuTextureDestroy(d.ds);
-        d.ds = nullptr;
-    }
-    if (d.backbuffer) {
-        wgpuTextureViewRelease(d.backbuffer);
-        d.backbuffer = nullptr;
-    }
-    if (d.swapchain) {
-        wgpuSwapChainRelease(d.swapchain);
-        d.swapchain = nullptr;
-    }
-    if (d.surface) {
-        wgpuSurfaceRelease(d.surface);
-        d.surface = nullptr;
-    }
-    if (d.queue) {
-        wgpuQueueRelease(d.queue);
-        d.queue = nullptr;
-    }
-    if (d.device) {
-        wgpuDeviceRelease(d.device);
-        d.device = nullptr;
-    }
+    releaseAndNull(d.ds_view);
+    releaseAndNull(d.ds);
+    releaseAndNull(d.backbuffer);
+    releaseAndNull(d.swapchain);
+    releaseAndNull(d.surface);
+    releaseAndNull(d.queue);
+    releaseAndNull(d.device);
 
     ImGui::DestroyContext();
 }
@@ -981,7 +1140,6 @@ static void frame()
     if (d.quit) {
         cleanup();
         emscripten_cancel_main_loop();
-        exit(0);
     }
 }
 
@@ -1057,12 +1215,6 @@ bool SceneData::assets_ready() const
     return true;
 }
 
-template <class Int>
-inline Int aligned(Int v, Int byteAlign)
-{
-    return (v + byteAlign - 1) & ~(byteAlign - 1);
-}
-
 void SceneData::init()
 {
 }
@@ -1088,6 +1240,15 @@ void Scene::gui()
     io.IniFilename = nullptr; // no imgui.ini
 
     ImGui::ShowDemoWindow(&sd->show_demo_window);
+
+    ImGui::SetNextWindowPos(ImVec2(50, 120), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 100), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Test");
+    if (ImGui::Button("Quit")) {
+        puts("quit");
+        d.quit = true;
+    }
+    ImGui::End();
 }
 
 void Scene::render()
