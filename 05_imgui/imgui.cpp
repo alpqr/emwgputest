@@ -381,6 +381,31 @@ static void next_gui_frame()
     }
 }
 
+template<typename T>
+bool clamp_scissor(const Size &renderTargetPixelSize, T *x, T *y, T *w, T *h)
+{
+    if (*w < 0 || *h < 0)
+        return false;
+
+    const T outputWidth = renderTargetPixelSize.width;
+    const T outputHeight = renderTargetPixelSize.height;
+    const T widthOffset = *x < 0 ? -*x : 0;
+    const T heightOffset = *y < 0 ? -*y : 0;
+    *w = *x < outputWidth ? std::max<T>(0, *w - widthOffset) : 0;
+    *h = *y < outputHeight ? std::max<T>(0, *h - heightOffset) : 0;
+
+    if (outputWidth > 0)
+        *x = std::clamp<T>(*x, 0, outputWidth - 1);
+    if (outputHeight > 0)
+        *y = std::clamp<T>(*y, 0, outputHeight - 1);
+    if (*x + *w > outputWidth)
+        *w = std::max<T>(0, outputWidth - *x);
+    if (*y + *h > outputHeight)
+        *h = std::max<T>(0, outputHeight - *y);
+
+    return true;
+}
+
 static void render_gui(WGPURenderPassEncoder pass)
 {
     ImDrawData *draw = ImGui::GetDrawData();
@@ -397,11 +422,8 @@ static void render_gui(WGPURenderPassEncoder pass)
                 float sy = cmd->ClipRect.y;
                 float sw = cmd->ClipRect.z - cmd->ClipRect.x;
                 float sh = cmd->ClipRect.w - cmd->ClipRect.y;
-                sx = std::max(0.0f, sx);
-                sy = std::max(0.0f, sy);
-                sw = std::min<float>(d.fb_size.width, sw);
-                sh = std::min<float>(d.fb_size.height, sh);
-                wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
+                if (clamp_scissor(d.fb_size, &sx, &sy, &sw, &sh))
+                    wgpuRenderPassEncoderSetScissorRect(pass, sx, sy, sw, sh);
                 wgpuRenderPassEncoderSetPipeline(pass, d.gui_ps);
                 wgpuRenderPassEncoderSetVertexBuffer(pass, 0, d.gui_vbuf, d.gui_buf_offsets[n].v_offset, d.gui_buf_offsets[n].v_size);
                 wgpuRenderPassEncoderSetIndexBuffer(pass, d.gui_ibuf, WGPUIndexFormat_Uint32, index_offset, cmd->ElemCount * 4);
