@@ -33,3 +33,7 @@ To debug as shown in https://developer.chrome.com/blog/wasm-debugging-2020/ add 
 05_imgui
 
 * Basic Dear Imgui integration
+
+06_localfile
+
+* Local file upload/download
