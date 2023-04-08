@@ -1346,7 +1346,7 @@ void Scene::gui()
         sd->file_contents.reset(new char[sd->file_contents_alloc_size]);
         sd->file_contents[0] = '\0';
         sd->filename = "document.txt";
-        sd->mime_type = "";
+        sd->mime_type = "text/plain";
     }
     ImGui::SameLine();
     if (ImGui::Button("Open local text file")) {
