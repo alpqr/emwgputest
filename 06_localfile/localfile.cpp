@@ -50,6 +50,7 @@ struct Scene
 static const uint32_t MAX_UBUF_SIZE = 65536;
 
 using LocalFileLoadCallback = std::function<void(const char *filename, const char *mime_type, char *data, size_t size)>;
+using LocalFileLoadFsApiCallback = std::function<void(const char *filename, char *data, size_t size)>;
 
 struct
 {
@@ -94,6 +95,7 @@ struct
 
     bool quit = false;
     LocalFileLoadCallback local_file_load_callback = nullptr;
+    LocalFileLoadFsApiCallback local_file_load_fs_api_callback = nullptr;
 
     Scene scene;
 } d;
@@ -1248,6 +1250,66 @@ static void save_local_file(const char *filename, const char *mime_type, const v
     begin_save_local_file(filename, mime_type, data, size);
 }
 
+// Modern alternative using the Filesystem API
+
+EM_JS(bool, has_fs_api, (), {
+    if (window.showOpenFilePicker === undefined)
+        return false;
+    if (window.showSaveFilePicker === undefined)
+        return false;
+    return true;
+});
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int _file_loaded_fs_api(const char *filename, char *data, size_t size)
+{
+    if (d.local_file_load_fs_api_callback)
+        d.local_file_load_fs_api_callback(filename, data, size);
+    return 1;
+}
+}
+
+EM_JS(void, begin_load_local_file_fs_api, (), {
+    window.showOpenFilePicker().then((fileHandles) => {
+        if (fileHandles.length > 0) {
+            const data = fileHandles[0].getFile().then((file) => {
+                file.arrayBuffer().then((result) => {
+                    const data = new Uint8Array(result);
+                    const buf = Module._malloc(data.length);
+                    Module.HEAPU8.set(data, buf);
+                    Module.ccall('_file_loaded_fs_api', 'number', ['string', 'number', 'number'],
+                        [file.name, buf, data.length]);
+                    Module._free(buf);
+                });
+            }).catch(err => { console.log(err); });
+        }
+    }).catch(err => {});
+});
+
+static void load_local_file_fs_api(LocalFileLoadFsApiCallback callback)
+{
+    d.local_file_load_fs_api_callback = callback;
+    begin_load_local_file_fs_api();
+}
+
+EM_JS(void, begin_save_local_file_fs_api, (const char *filename, const void *data, size_t size), {
+    window.showSaveFilePicker({
+        "suggestedName": UTF8ToString(filename)
+    }).then((fileHandle) => {
+        fileHandle.createWritable().then((writableHandle) => {
+            var arr = new Uint8Array(Module.HEAPU8.buffer, data, size);
+            writableHandle.write(arr).then(() => {
+                writableHandle.close();
+            }).catch(err => { console.log(err); });
+        }).catch(err => { console.log(err); });
+    }).catch(err => {});
+});
+
+static void save_local_file_fs_api(const char *filename, const void *data, size_t size)
+{
+    begin_save_local_file_fs_api(filename, data, size);
+}
+
 int main()
 {
     ImGui::CreateContext();
@@ -1350,20 +1412,35 @@ void Scene::gui()
     }
     ImGui::SameLine();
     if (ImGui::Button("Open local text file")) {
-        load_local_file("text/*", [this](const char *filename, const char *mime_type, char *data, size_t size) {
-            printf("load callback: %s %s %p %lu\n", filename, mime_type, data, size);
-            sd->file_contents_alloc_size = size * 2;
-            sd->file_contents.reset(new char[sd->file_contents_alloc_size]);
-            memcpy(sd->file_contents.get(), data, size);
-            sd->file_contents[size] = '\0';
-            sd->filename = filename;
-            sd->mime_type = mime_type;
-        });
+        if (has_fs_api()) {
+            load_local_file_fs_api([this](const char *filename, char *data, size_t size) {
+                printf("load callback: %s %p %lu\n", filename, data, size);
+                sd->file_contents_alloc_size = size * 2;
+                sd->file_contents.reset(new char[sd->file_contents_alloc_size]);
+                memcpy(sd->file_contents.get(), data, size);
+                sd->file_contents[size] = '\0';
+                sd->filename = filename;
+            });
+        } else {
+            load_local_file("text/*", [this](const char *filename, const char *mime_type, char *data, size_t size) {
+                printf("load callback: %s %s %p %lu\n", filename, mime_type, data, size);
+                sd->file_contents_alloc_size = size * 2;
+                sd->file_contents.reset(new char[sd->file_contents_alloc_size]);
+                memcpy(sd->file_contents.get(), data, size);
+                sd->file_contents[size] = '\0';
+                sd->filename = filename;
+                sd->mime_type = mime_type;
+            });
+        }
     }
     if (sd->file_contents) {
         ImGui::SameLine();
-        if (ImGui::Button("Download"))
-            save_local_file(sd->filename.c_str(), sd->mime_type.c_str(), sd->file_contents.get(), strlen(sd->file_contents.get()));
+        if (ImGui::Button("Save As")) {
+            if (has_fs_api())
+                save_local_file_fs_api(sd->filename.c_str(), sd->file_contents.get(), strlen(sd->file_contents.get()));
+            else
+                save_local_file(sd->filename.c_str(), sd->mime_type.c_str(), sd->file_contents.get(), strlen(sd->file_contents.get()));
+        }
         ImGui::TextUnformatted(sd->filename.c_str());
         ImGui::SameLine();
         ImGui::TextUnformatted(sd->mime_type.c_str());
