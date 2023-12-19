@@ -49,6 +49,7 @@ struct
     Size fb_size;
     float dpr = 0.0f;
 
+    WGPUInstance instance = nullptr;
     WGPUDevice device = nullptr;
     WGPUQueue queue = nullptr;
     WGPUSurface surface = nullptr;
@@ -77,7 +78,7 @@ WGPUShaderModule create_shader_module(const char *wgsl_source)
         .chain = {
             .sType = WGPUSType_ShaderModuleWGSLDescriptor
         },
-        .source = wgsl_source
+        .code = wgsl_source
     };
     WGPUShaderModuleDescriptor desc = {
         .nextInChain = &wgsl_desc.chain
@@ -332,7 +333,7 @@ static void init()
     WGPUSurfaceDescriptor surfDesc = {
         .nextInChain = &canvasDesc.chain
     };
-    d.surface = wgpuInstanceCreateSurface(nullptr, &surfDesc);
+    d.surface = wgpuInstanceCreateSurface(d.instance, &surfDesc);
 
     WGPUSwapChainDescriptor scDesc = {
         .usage = WGPUTextureUsage_RenderAttachment,
@@ -380,6 +381,10 @@ static void cleanup()
         wgpuDeviceRelease(d.device);
         d.device = nullptr;
     }
+    if (d.instance) {
+        wgpuInstanceRelease(d.instance);
+        d.instance = nullptr;
+    }
 }
 
 static void frame()
@@ -397,11 +402,15 @@ static void frame()
     }
 }
 
-using InitWGpuCallback = void (*)(WGPUDevice);
+using InitWGpuCallback = void (*)(WGPUInstance, WGPUDevice);
 
 static void init_wgpu(InitWGpuCallback callback)
 {
-    wgpuInstanceRequestAdapter(nullptr, nullptr, [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* userdata) {
+    WGPUInstanceDescriptor instanceDesc = {};
+    static WGPUInstance instance;
+    instance = wgpuCreateInstance(&instanceDesc);
+
+    wgpuInstanceRequestAdapter(instance, nullptr, [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* userdata) {
         if (message)
             printf("wgpuInstanceRequestAdapter: %s\n", message);
         if (status == WGPURequestAdapterStatus_Unavailable) {
@@ -411,7 +420,7 @@ static void init_wgpu(InitWGpuCallback callback)
         wgpuAdapterRequestDevice(adapter, nullptr, [](WGPURequestDeviceStatus status, WGPUDevice dev, const char* message, void* userdata) {
             if (message)
                 printf("wgpuAdapterRequestDevice: %s\n", message);
-            reinterpret_cast<InitWGpuCallback>(userdata)(dev);
+            reinterpret_cast<InitWGpuCallback>(userdata)(instance, dev);
         }, userdata);
     }, reinterpret_cast<void *>(callback));
 }
@@ -421,7 +430,8 @@ int main()
     update_size();
     emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, false, size_changed);
 
-    init_wgpu([](WGPUDevice dev) {
+    init_wgpu([](WGPUInstance instance, WGPUDevice dev) {
+        d.instance = instance;
         d.device = dev;
         init();
         emscripten_set_main_loop(frame, 0, false);

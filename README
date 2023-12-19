@@ -1,11 +1,11 @@
 Simple test apps for WebGPU with Emscripten.
-Tested with Emscripten 3.1.34 and Chrome Canary 113.0.566x.x on macOS and Windows.
+Tested with Emscripten 3.1.51 and Chrome 120.0.6099.109.
 
 cd 01_blue_triangle
 mkdir build
 emcmake cmake -B build .
 cmake --build build
-emrun --browser chrome_canary blue_triangle.html
+emrun --browser chrome blue_triangle.html
 
 To debug as shown in https://developer.chrome.com/blog/wasm-debugging-2020/ add -DCMAKE_BUILD_TYPE=Debug when configuring.
 
