@@ -37,3 +37,9 @@ To debug as shown in https://developer.chrome.com/blog/wasm-debugging-2020/ add 
 06_localfile
 
 * Local file upload/download
+
+07_localfile2
+
+* Sets a custom font for the gui
+* Uses glm instead of HMM
+* Combined with rotating_triangle
